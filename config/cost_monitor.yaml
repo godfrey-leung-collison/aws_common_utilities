@@ -1,5 +1,10 @@
 start_date: "2025-01-01"    # must be in ISO format YYYY-MM-DD, inclusive
 end_date: "2025-12-01"      # must be in ISO format YYYY-MM-DD, exclusive
+
+# filepath to save the cost report
+output_filepath_prefix: "data/cost_reports/sagemaker_cost_report"
+
+# Cost Explorer parameters
 Granularity: "MONTHLY"
 Filter:
     Dimensions:
@@ -8,13 +13,6 @@ Filter:
           - "Amazon SageMaker"
         MatchOptions:
           - "EQUALS"
-#
-#        LinkedAccount:
-#            - "123456789012"   # Example Account ID 1
-#            - "210987654321"   # Example Account ID 2
-#        Service:
-#            - "AmazonEC2"
-#            - "AmazonS3"
 metrics:
     - "BlendedCost"
     - "UnblendedCost"
