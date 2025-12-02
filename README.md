@@ -20,7 +20,8 @@ The scripts have been tested in Python 3.12 (on M1 Mac)
 > [!IMPORTANT]
 > Dependencies management for consistent and replicable development & production environments.
 
-
+Reference tutorial guide on how to use `uv`:
+https://realpython.com/python-uv/
 
 ## How to run the (example) scripts (locally)
 
