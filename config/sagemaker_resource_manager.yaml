@@ -1,0 +1,63 @@
+# SageMaker Resource Manager Configuration
+# ==========================================
+
+# AWS Region (optional - uses default if not specified)
+region_name: "eu-west-1"
+
+# SageMaker Studio Domain ID (required for most operations)
+# You can find this in the AWS Console under SageMaker > Domains
+domain_id: "d-r9yf1pxceg1k"
+
+# Action to perform:
+#   - list_domains: List all SageMaker Studio domains in the account
+#   - list: List all spaces in the specified domain
+#   - list_apps: List all running apps (instances) in the domain
+#   - list_with_tags: List spaces with their current tags
+#   - list_running: List only spaces with running apps
+#   - tag: Bulk tag spaces (uses 'tags' config below)
+#   - tag_single: Tag a single space (uses 'space_name' and 'tags' config)
+#   - get_tags: Get tags for a specific space (uses 'space_name' config)
+#   - stop: Stop a single space (uses 'space_name' config)
+#   - stop_bulk: Stop multiple spaces (uses 'space_names' or 'stop_all_running' config)
+action: "list_with_tags"
+
+# Filter by space type (optional): 'JupyterLab', 'CodeEditor', or null for all
+space_type_filter: null
+
+# Output file path for exporting results (optional)
+# output_filepath: "data/sagemaker_spaces/spaces_list.csv"
+
+# ==========================================
+# Tagging Configuration
+# ==========================================
+
+# Tags to apply when using 'tag' or 'tag_single' actions
+tags:
+  Name: "ml-space"
+  Environment: "development"
+  Project: "MLP"
+  Team: "DataScience"
+  CostCenter: "DS-001"
+
+# Specific space name for 'tag_single' or 'get_tags' actions
+space_name: null
+
+# Specific space names for bulk tagging or bulk stop (optional)
+# Used with 'tag' and 'stop_bulk' actions
+space_names: null
+#  - "my-jupyter-space"
+#  - "my-code-editor-space"
+
+# ==========================================
+# Stop Configuration
+# ==========================================
+
+# Whether to wait for apps to be fully deleted before returning
+# Used with 'stop' and 'stop_bulk' actions
+wait_for_deletion: false
+
+# Stop all running spaces in the domain (safety flag)
+# Only used with 'stop_bulk' action when 'space_names' is null
+# Set to true to stop all running spaces (use with caution!)
+stop_all_running: false
+

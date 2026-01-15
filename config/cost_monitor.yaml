@@ -2,7 +2,7 @@ start_date: "2025-01-01"    # must be in ISO format YYYY-MM-DD, inclusive
 end_date: "2025-12-01"      # must be in ISO format YYYY-MM-DD, exclusive
 
 # filepath to save the cost report
-output_filepath_prefix: "data/cost_reports/sagemaker_cost_report"
+output_filepath_prefix: "data/cost_reports/sagemaker_cost_report_prod"
 
 # Cost Explorer parameters
 Granularity: "MONTHLY"
@@ -18,8 +18,8 @@ metrics:
     - "UnblendedCost"
     - "UsageQuantity"
 GroupBy:
-    - Type: "DIMENSION"
-      Key: "USAGE_TYPE"
+#    - Type: "DIMENSION"
+#      Key: "USAGE_TYPE"
     # if group and breakdown by tag
-#    - Type: "TAG"
-#      Key: "Name"
+    - Type: "TAG"
+      Key: "Name"
