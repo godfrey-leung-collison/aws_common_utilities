@@ -900,7 +900,7 @@ if __name__ == "__main__":
         print(spaces_df_print.to_string(index=False))
 
         # Export to CSV if configured
-        output_filepath = config.get("output_filepath")
+        output_filepath = config.get("output_filepath", False)
         if output_filepath:
             output_path = project_root_directory / output_filepath
             output_path.parent.mkdir(parents=True, exist_ok=True)

@@ -9,13 +9,13 @@ region_name: "eu-west-1"
 
 # SageMaker Studio Domain ID (optional - can be selected in UI)
 # You can find this in the AWS Console under SageMaker > Domains
-domain_id: "d-r9yf1pxceg1k"
+domain_id: "d-s7wmelazdslr"
 
 # Cost Analysis Settings
 # ----------------------
 
 # Default number of months to look back for cost analysis
-default_months_back: 6
+default_months_back: 12
 
 # Default tag key for cost breakdown
 # Options: Name, Project, Team, CostCenter, Environment
