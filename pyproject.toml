@@ -1,11 +1,16 @@
 [project]
 name = "aws-utilities"
 version = "0.1.0"
-description = "Add your description here"
+description = "AWS utilities for cost monitoring and SageMaker resource management"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "boto3>=1.42.0",
     "pandas>=2.3.3",
+    "plotly>=5.18.0",
     "pyyaml>=6.0.3",
+    "streamlit>=1.31.0",
 ]
+
+[project.scripts]
+sagemaker-dashboard = "dashboards.sagemaker_cost_dashboard:main"
