@@ -667,6 +667,368 @@ def display_running_resources(running_df: pd.DataFrame):
 
 
 # =============================================================================
+# Tag Management Section
+# =============================================================================
+
+def render_tag_management_section(domain_id: str, region_name: str, config: dict):
+    """
+    Render the tag management section for SageMaker spaces.
+    
+    Parameters
+    ----------
+    domain_id : str
+        The SageMaker domain ID.
+    region_name : str
+        AWS region name.
+    config : dict
+        Dashboard configuration.
+    """
+    st.markdown(
+        """
+        <div class="info-box">
+        <strong>ℹ️ Tag Management</strong><br>
+        Add or modify tags on your SageMaker JupyterLab and CodeEditor spaces.
+        Tags help with cost allocation, organization, and resource management.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    
+    # Initialize session state for tag management
+    if "tag_operation_pending" not in st.session_state:
+        st.session_state.tag_operation_pending = False
+    if "selected_spaces_for_tagging" not in st.session_state:
+        st.session_state.selected_spaces_for_tagging = []
+    if "tags_to_apply" not in st.session_state:
+        st.session_state.tags_to_apply = {}
+    
+    # Fetch spaces for the domain
+    try:
+        all_spaces_df = fetch_all_spaces_with_tags_cached(domain_id, region_name)
+        
+        if all_spaces_df.empty:
+            st.info("No spaces found in this domain.")
+            return
+            
+    except Exception as e:
+        st.error(f"Error fetching spaces: {e}")
+        return
+    
+    # Filter options
+    col1, col2 = st.columns([1, 3])
+    
+    with col1:
+        space_type_filter = st.selectbox(
+            "Filter by Space Type",
+            options=["All", "JupyterLab", "CodeEditor"],
+            index=0,
+            help="Filter spaces by type",
+        )
+    
+    # Apply filter
+    if space_type_filter != "All":
+        filtered_spaces = all_spaces_df[
+            all_spaces_df["space_type"].str.lower() == space_type_filter.lower()
+        ]
+    else:
+        filtered_spaces = all_spaces_df
+    
+    if filtered_spaces.empty:
+        st.info(f"No {space_type_filter} spaces found.")
+        return
+    
+    # Space selection
+    space_options = filtered_spaces["space_name"].tolist()
+    
+    selected_spaces = st.multiselect(
+        "Select Spaces to Tag",
+        options=space_options,
+        default=[],
+        help="Select one or more spaces to add or update tags",
+        placeholder="Choose spaces...",
+    )
+    
+    if not selected_spaces:
+        st.info("👆 Select one or more spaces above to manage their tags.")
+        return
+    
+    # Show currently selected spaces with their existing tags
+    st.markdown("### Selected Spaces")
+    
+    selected_spaces_df = filtered_spaces[
+        filtered_spaces["space_name"].isin(selected_spaces)
+    ].copy()
+    
+    # Display selected spaces
+    display_cols = ["space_name", "space_type", "owner_user_profile", "tags"]
+    available_cols = [col for col in display_cols if col in selected_spaces_df.columns]
+    
+    # Format tags for display
+    if "tags" in selected_spaces_df.columns:
+        selected_spaces_df["tags_display"] = selected_spaces_df["tags"].apply(
+            lambda x: ", ".join([f"{k}={v}" for k, v in x.items()]) if isinstance(x, dict) else str(x)
+        )
+        available_cols = ["space_name", "space_type", "owner_user_profile", "tags_display"]
+    
+    st.dataframe(
+        selected_spaces_df[available_cols].rename(columns={
+            "space_name": "Space Name",
+            "space_type": "Type", 
+            "owner_user_profile": "Owner",
+            "tags_display": "Current Tags",
+        }),
+        use_container_width=True,
+        hide_index=True,
+    )
+    
+    st.markdown("---")
+    
+    # Tag input section
+    st.markdown("### Tags to Add/Update")
+    
+    st.markdown(
+        """
+        <div style="font-size: 0.9rem; color: #94a3b8; margin-bottom: 1rem;">
+        Enter the tags you want to add or update. Existing tags with the same key will be overwritten.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    
+    # Predefined tag keys from config
+    available_tag_keys = config.get("available_tag_keys", ["Name", "Project", "Team", "CostCenter", "Environment"])
+    
+    # Dynamic tag input
+    num_tags = st.number_input(
+        "Number of tags to add",
+        min_value=1,
+        max_value=10,
+        value=1,
+        step=1,
+        help="How many tags do you want to add?",
+    )
+    
+    tags_to_apply = {}
+    
+    for i in range(int(num_tags)):
+        col_key, col_value = st.columns([1, 2])
+        
+        with col_key:
+            # Allow selection from predefined keys or custom input
+            tag_key = st.selectbox(
+                f"Tag Key {i+1}",
+                options=available_tag_keys + ["Custom..."],
+                key=f"tag_key_{i}",
+                label_visibility="collapsed" if i > 0 else "visible",
+            )
+            
+            if tag_key == "Custom...":
+                tag_key = st.text_input(
+                    f"Custom Key {i+1}",
+                    key=f"custom_key_{i}",
+                    placeholder="Enter custom key",
+                )
+        
+        with col_value:
+            tag_value = st.text_input(
+                f"Tag Value {i+1}",
+                key=f"tag_value_{i}",
+                placeholder="Enter tag value",
+                label_visibility="collapsed" if i > 0 else "visible",
+            )
+        
+        if tag_key and tag_value and tag_key != "Custom...":
+            tags_to_apply[tag_key] = tag_value
+    
+    if not tags_to_apply:
+        st.warning("Please enter at least one tag key-value pair.")
+        return
+    
+    # Preview tags to be applied
+    st.markdown("### Preview")
+    
+    preview_data = [{"Key": k, "Value": v} for k, v in tags_to_apply.items()]
+    st.dataframe(
+        pd.DataFrame(preview_data),
+        use_container_width=True,
+        hide_index=True,
+    )
+    
+    st.markdown(
+        f"""
+        <div style="background: rgba(99, 102, 241, 0.1); border-radius: 8px; padding: 1rem; margin: 1rem 0;">
+        <strong>Summary:</strong> Apply <strong>{len(tags_to_apply)}</strong> tag(s) to 
+        <strong>{len(selected_spaces)}</strong> space(s)
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    
+    # Store in session state for confirmation dialog
+    st.session_state.selected_spaces_for_tagging = selected_spaces
+    st.session_state.tags_to_apply = tags_to_apply
+    
+    # Apply button with confirmation
+    st.markdown("---")
+    
+    col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 2])
+    
+    with col_btn1:
+        if st.button("🏷️ Apply Tags", type="primary", use_container_width=True):
+            st.session_state.tag_operation_pending = True
+            st.rerun()
+    
+    with col_btn2:
+        if st.button("🗑️ Clear Selection", use_container_width=True):
+            st.session_state.selected_spaces_for_tagging = []
+            st.session_state.tags_to_apply = {}
+            st.session_state.tag_operation_pending = False
+            st.rerun()
+    
+    # Confirmation dialog
+    if st.session_state.tag_operation_pending:
+        render_tag_confirmation_dialog(domain_id, region_name)
+
+
+@st.dialog("Confirm Tag Operation")
+def render_tag_confirmation_dialog(domain_id: str, region_name: str):
+    """
+    Render confirmation dialog for tag operations.
+    
+    Parameters
+    ----------
+    domain_id : str
+        The SageMaker domain ID.
+    region_name : str
+        AWS region name.
+    """
+    selected_spaces = st.session_state.selected_spaces_for_tagging
+    tags_to_apply = st.session_state.tags_to_apply
+    
+    st.markdown(
+        """
+        <div style="font-size: 1.1rem; margin-bottom: 1rem;">
+        ⚠️ <strong>Are you sure you want to apply these tags?</strong>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    
+    st.markdown("**Spaces to be tagged:**")
+    for space in selected_spaces:
+        st.markdown(f"- `{space}`")
+    
+    st.markdown("**Tags to be applied:**")
+    for key, value in tags_to_apply.items():
+        st.markdown(f"- **{key}**: `{value}`")
+    
+    st.warning(
+        "This action will add or overwrite tags on the selected spaces. "
+        "Existing tags with different keys will not be affected."
+    )
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("✅ Confirm & Apply", type="primary", use_container_width=True):
+            # Execute the tagging operation
+            apply_tags_to_spaces(domain_id, region_name, selected_spaces, tags_to_apply)
+            st.session_state.tag_operation_pending = False
+            st.rerun()
+    
+    with col2:
+        if st.button("❌ Cancel", use_container_width=True):
+            st.session_state.tag_operation_pending = False
+            st.rerun()
+
+
+def apply_tags_to_spaces(
+    domain_id: str,
+    region_name: str,
+    space_names: list,
+    tags: dict,
+):
+    """
+    Apply tags to selected SageMaker spaces.
+    
+    Parameters
+    ----------
+    domain_id : str
+        The SageMaker domain ID.
+    region_name : str
+        AWS region name.
+    space_names : list
+        List of space names to tag.
+    tags : dict
+        Dictionary of tags to apply.
+    """
+    manager = get_space_manager(region_name)
+    
+    results = []
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    for i, space_name in enumerate(space_names):
+        status_text.text(f"Tagging space: {space_name}...")
+        
+        try:
+            # Get space ARN
+            space_arn = manager.get_space_arn(domain_id, space_name)
+            
+            if space_arn:
+                success = manager.add_or_update_tags(space_arn, tags)
+                results.append({
+                    "space_name": space_name,
+                    "success": success,
+                    "message": "Tags applied successfully" if success else "Failed to apply tags",
+                })
+            else:
+                results.append({
+                    "space_name": space_name,
+                    "success": False,
+                    "message": "Could not find space ARN",
+                })
+                
+        except Exception as e:
+            results.append({
+                "space_name": space_name,
+                "success": False,
+                "message": str(e),
+            })
+        
+        progress_bar.progress((i + 1) / len(space_names))
+    
+    status_text.empty()
+    progress_bar.empty()
+    
+    # Clear cache to refresh data
+    st.cache_data.clear()
+    
+    # Show results
+    success_count = sum(1 for r in results if r["success"])
+    
+    if success_count == len(results):
+        st.success(f"✅ Successfully applied tags to all {len(results)} space(s)!")
+    elif success_count > 0:
+        st.warning(f"⚠️ Applied tags to {success_count}/{len(results)} space(s). Some operations failed.")
+    else:
+        st.error("❌ Failed to apply tags to any spaces.")
+    
+    # Show detailed results
+    with st.expander("📋 View Detailed Results"):
+        results_df = pd.DataFrame(results)
+        results_df["Status"] = results_df["success"].apply(lambda x: "✅ Success" if x else "❌ Failed")
+        st.dataframe(
+            results_df[["space_name", "Status", "message"]].rename(columns={
+                "space_name": "Space Name",
+                "message": "Message",
+            }),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
+# =============================================================================
 # Main Dashboard
 # =============================================================================
 
@@ -1036,6 +1398,18 @@ def main():
                 logger.error(f"Error fetching running resources: {e}")
     else:
         st.warning("Please select or enter a SageMaker domain ID to view running resources.")
+
+    # ==========================================================================
+    # Tag Management Section
+    # ==========================================================================
+    
+    st.markdown("---")
+    st.markdown("## 🏷️ Space Tag Management")
+    
+    if domain_id:
+        render_tag_management_section(domain_id, region_name, config)
+    else:
+        st.warning("Please select or enter a SageMaker domain ID to manage tags.")
 
     # ==========================================================================
     # Footer
