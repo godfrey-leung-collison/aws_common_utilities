@@ -1,0 +1,52 @@
+# SageMaker Cost Dashboard Configuration
+# =======================================
+
+# AWS Configuration
+# -----------------
+
+# AWS region for Cost Explorer and SageMaker APIs
+region_name: "eu-west-1"
+
+# SageMaker Studio Domain ID (optional - can be selected in UI)
+# You can find this in the AWS Console under SageMaker > Domains
+domain_id: "d-r9yf1pxceg1k"
+
+# Cost Analysis Settings
+# ----------------------
+
+# Default number of months to look back for cost analysis
+default_months_back: 6
+
+# Default tag key for cost breakdown
+# Options: Name, Project, Team, CostCenter, Environment
+default_tag_key: "Name"
+
+# Available tag keys for grouping in the UI
+available_tag_keys:
+  - "Name"
+  - "Project"
+  - "Team"
+  - "CostCenter"
+  - "Environment"
+
+# Display Settings
+# ----------------
+
+# Number of top items to show in breakdown charts
+top_n_items: 10
+
+# Number of top categories to show in trend charts
+top_n_trends: 5
+
+# Cache Settings
+# --------------
+
+# Cache TTL for cost data in seconds (5 minutes)
+cost_data_cache_ttl: 300
+
+# Cache TTL for running resources in seconds (1 minute)
+resources_cache_ttl: 60
+
+# Cache TTL for domain list in seconds (1 hour)
+domains_cache_ttl: 3600
+
