@@ -25,7 +25,13 @@ import yaml
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from dashboards.data_fetcher import CostDataFetcher, get_summary_metrics
+from dashboards.data_fetcher import (
+    CostDataFetcher,
+    get_summary_metrics,
+    get_usage_summary_metrics,
+    create_workspace_usage_pivot,
+    create_monthly_usage_by_workspace,
+)
 from scripts.sagemaker_resource_manager.manage_sagemaker_spaces import SageMakerSpaceManager
 
 logging.basicConfig()
@@ -234,6 +240,17 @@ def fetch_domains_cached(region_name: str = None):
     """Fetch SageMaker domains."""
     manager = get_space_manager(region_name)
     return manager.list_domains()
+
+
+@st.cache_data(ttl=300)
+def fetch_usage_by_workspace_cached(
+    start_date: str, end_date: str, tag_key: str, region_name: str = None
+):
+    """Fetch usage data by workspace and instance type with caching."""
+    fetcher = get_cost_fetcher(region_name)
+    return fetcher.fetch_usage_by_workspace_and_instance(
+        start_date, end_date, tag_key=tag_key
+    )
 
 
 # =============================================================================
@@ -591,6 +608,600 @@ def create_trend_chart(
         ),
         yaxis=dict(
             tickformat="$,.0f",
+            gridcolor="rgba(148, 163, 184, 0.1)",
+        ),
+        plot_bgcolor="rgba(0, 0, 0, 0)",
+        paper_bgcolor="rgba(0, 0, 0, 0)",
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1,
+        ),
+        margin=dict(l=60, r=30, t=80, b=40),
+        hovermode="x unified",
+    )
+
+    return fig
+
+
+# =============================================================================
+# Usage Hours Visualization Functions
+# =============================================================================
+
+def create_usage_hours_chart(
+    usage_df: pd.DataFrame,
+    title: str = "Usage Hours by Month",
+) -> go.Figure:
+    """
+    Create a monthly usage hours bar chart.
+    
+    Parameters
+    ----------
+    usage_df : pd.DataFrame
+        DataFrame with usage data.
+    title : str, optional
+        Chart title.
+    
+    Returns
+    -------
+    go.Figure
+        Plotly figure object.
+    """
+    fig = go.Figure()
+
+    if usage_df.empty or "usage_hours" not in usage_df.columns:
+        fig.add_annotation(
+            text="No usage data available",
+            xref="paper",
+            yref="paper",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+        )
+        return fig
+
+    # Filter out storage for compute hours
+    compute_df = usage_df[~usage_df["usage_type"].str.contains("VolumeUsage", na=False)]
+    
+    if compute_df.empty:
+        fig.add_annotation(
+            text="No compute usage data available",
+            xref="paper",
+            yref="paper",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+        )
+        return fig
+
+    # Aggregate by month
+    monthly_hours = (
+        compute_df.groupby(["time_period_start", "month"])["usage_hours"]
+        .sum()
+        .reset_index()
+        .sort_values("time_period_start")
+    )
+
+    fig.add_trace(
+        go.Bar(
+            x=monthly_hours["month"],
+            y=monthly_hours["usage_hours"],
+            name="Usage Hours",
+            marker_color="#22c55e",
+            hovertemplate="<b>%{x}</b><br>Hours: %{y:,.1f}<extra></extra>",
+        )
+    )
+
+    fig.update_layout(
+        title=dict(
+            text=title,
+            font=dict(size=18, family="Space Grotesk, sans-serif"),
+        ),
+        xaxis_title="",
+        yaxis_title="Hours",
+        yaxis=dict(
+            tickformat=",.0f",
+            gridcolor="rgba(148, 163, 184, 0.1)",
+        ),
+        xaxis=dict(
+            gridcolor="rgba(148, 163, 184, 0.1)",
+        ),
+        plot_bgcolor="rgba(0, 0, 0, 0)",
+        paper_bgcolor="rgba(0, 0, 0, 0)",
+        margin=dict(l=60, r=30, t=80, b=40),
+        bargap=0.3,
+    )
+
+    return fig
+
+
+def create_usage_by_workspace_chart(
+    usage_df: pd.DataFrame,
+    title: str = "Usage Hours by Workspace",
+    top_n: int = 10,
+) -> go.Figure:
+    """
+    Create a horizontal bar chart of usage hours by workspace.
+    
+    Parameters
+    ----------
+    usage_df : pd.DataFrame
+        DataFrame with usage data.
+    title : str, optional
+        Chart title.
+    top_n : int, optional
+        Number of top workspaces to show.
+    
+    Returns
+    -------
+    go.Figure
+        Plotly figure object.
+    """
+    if usage_df.empty or "usage_hours" not in usage_df.columns:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No usage data available",
+            xref="paper",
+            yref="paper",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+        )
+        return fig
+
+    # Filter out storage
+    compute_df = usage_df[~usage_df["usage_type"].str.contains("VolumeUsage", na=False)]
+    
+    if compute_df.empty:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No compute usage data available",
+            xref="paper",
+            yref="paper",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+        )
+        return fig
+
+    # Aggregate by workspace
+    workspace_hours = (
+        compute_df.groupby("workspace")["usage_hours"]
+        .sum()
+        .reset_index()
+        .sort_values("usage_hours", ascending=True)
+        .tail(top_n)
+    )
+
+    # Create color gradient
+    colors = px.colors.sequential.Greens[::-1]
+    n_colors = len(workspace_hours)
+    color_indices = [int(i * (len(colors) - 1) / max(n_colors - 1, 1)) for i in range(n_colors)]
+    bar_colors = [colors[i] for i in color_indices]
+
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Bar(
+            x=workspace_hours["usage_hours"],
+            y=workspace_hours["workspace"],
+            orientation="h",
+            marker_color=bar_colors,
+            hovertemplate="<b>%{y}</b><br>Hours: %{x:,.1f}<extra></extra>",
+        )
+    )
+
+    fig.update_layout(
+        title=dict(
+            text=title,
+            font=dict(size=16, family="Space Grotesk, sans-serif"),
+        ),
+        xaxis_title="Hours",
+        yaxis_title="",
+        xaxis=dict(
+            tickformat=",.0f",
+            gridcolor="rgba(148, 163, 184, 0.1)",
+        ),
+        yaxis=dict(
+            gridcolor="rgba(148, 163, 184, 0.1)",
+        ),
+        plot_bgcolor="rgba(0, 0, 0, 0)",
+        paper_bgcolor="rgba(0, 0, 0, 0)",
+        margin=dict(l=200, r=30, t=60, b=40),
+        height=400,
+    )
+
+    return fig
+
+
+def create_usage_by_instance_chart(
+    usage_df: pd.DataFrame,
+    title: str = "Usage Hours by Instance Type",
+    top_n: int = 10,
+) -> go.Figure:
+    """
+    Create a horizontal bar chart of usage hours by instance type.
+    
+    Parameters
+    ----------
+    usage_df : pd.DataFrame
+        DataFrame with usage data.
+    title : str, optional
+        Chart title.
+    top_n : int, optional
+        Number of top instance types to show.
+    
+    Returns
+    -------
+    go.Figure
+        Plotly figure object.
+    """
+    if usage_df.empty or "usage_hours" not in usage_df.columns:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No usage data available",
+            xref="paper",
+            yref="paper",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+        )
+        return fig
+
+    # Filter out storage
+    compute_df = usage_df[~usage_df["usage_type"].str.contains("VolumeUsage", na=False)]
+    
+    if compute_df.empty:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No compute usage data available",
+            xref="paper",
+            yref="paper",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+        )
+        return fig
+
+    # Aggregate by instance type
+    instance_hours = (
+        compute_df.groupby("instance_type")["usage_hours"]
+        .sum()
+        .reset_index()
+        .sort_values("usage_hours", ascending=True)
+        .tail(top_n)
+    )
+
+    # Create color gradient
+    colors = px.colors.sequential.Blues[::-1]
+    n_colors = len(instance_hours)
+    color_indices = [int(i * (len(colors) - 1) / max(n_colors - 1, 1)) for i in range(n_colors)]
+    bar_colors = [colors[i] for i in color_indices]
+
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Bar(
+            x=instance_hours["usage_hours"],
+            y=instance_hours["instance_type"],
+            orientation="h",
+            marker_color=bar_colors,
+            hovertemplate="<b>%{y}</b><br>Hours: %{x:,.1f}<extra></extra>",
+        )
+    )
+
+    fig.update_layout(
+        title=dict(
+            text=title,
+            font=dict(size=16, family="Space Grotesk, sans-serif"),
+        ),
+        xaxis_title="Hours",
+        yaxis_title="",
+        xaxis=dict(
+            tickformat=",.0f",
+            gridcolor="rgba(148, 163, 184, 0.1)",
+        ),
+        yaxis=dict(
+            gridcolor="rgba(148, 163, 184, 0.1)",
+        ),
+        plot_bgcolor="rgba(0, 0, 0, 0)",
+        paper_bgcolor="rgba(0, 0, 0, 0)",
+        margin=dict(l=150, r=30, t=60, b=40),
+        height=400,
+    )
+
+    return fig
+
+
+def create_usage_by_app_type_chart(
+    usage_df: pd.DataFrame,
+    title: str = "Usage Hours by App Type",
+) -> go.Figure:
+    """
+    Create a pie chart of usage hours by app type (JupyterLab, CodeEditor, etc.).
+    
+    Parameters
+    ----------
+    usage_df : pd.DataFrame
+        DataFrame with usage data.
+    title : str, optional
+        Chart title.
+    
+    Returns
+    -------
+    go.Figure
+        Plotly figure object.
+    """
+    if usage_df.empty or "usage_hours" not in usage_df.columns:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No usage data available",
+            xref="paper",
+            yref="paper",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+        )
+        return fig
+
+    # Filter out storage
+    compute_df = usage_df[~usage_df["usage_type"].str.contains("VolumeUsage", na=False)]
+    
+    if compute_df.empty or "app_type" not in compute_df.columns:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No compute usage data available",
+            xref="paper",
+            yref="paper",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+        )
+        return fig
+
+    # Aggregate by app type
+    app_hours = (
+        compute_df.groupby("app_type")["usage_hours"]
+        .sum()
+        .reset_index()
+        .sort_values("usage_hours", ascending=False)
+    )
+
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Pie(
+            labels=app_hours["app_type"],
+            values=app_hours["usage_hours"],
+            hole=0.4,
+            marker=dict(
+                colors=["#22c55e", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899"],
+            ),
+            textinfo="label+percent",
+            textposition="outside",
+            hovertemplate="<b>%{label}</b><br>Hours: %{value:,.1f}<br>%{percent}<extra></extra>",
+        )
+    )
+
+    fig.update_layout(
+        title=dict(
+            text=title,
+            font=dict(size=16, family="Space Grotesk, sans-serif"),
+        ),
+        plot_bgcolor="rgba(0, 0, 0, 0)",
+        paper_bgcolor="rgba(0, 0, 0, 0)",
+        showlegend=True,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.2,
+            xanchor="center",
+            x=0.5,
+        ),
+        margin=dict(l=30, r=30, t=60, b=80),
+        height=400,
+    )
+
+    return fig
+
+
+def create_workspace_instance_heatmap(
+    usage_df: pd.DataFrame,
+    title: str = "Usage Hours: Workspace vs Instance Type",
+    top_workspaces: int = 10,
+    top_instances: int = 8,
+) -> go.Figure:
+    """
+    Create a heatmap showing usage hours by workspace and instance type.
+    
+    Parameters
+    ----------
+    usage_df : pd.DataFrame
+        DataFrame with usage data.
+    title : str, optional
+        Chart title.
+    top_workspaces : int, optional
+        Number of top workspaces to show.
+    top_instances : int, optional
+        Number of top instance types to show.
+    
+    Returns
+    -------
+    go.Figure
+        Plotly figure object.
+    """
+    if usage_df.empty or "usage_hours" not in usage_df.columns:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No usage data available",
+            xref="paper",
+            yref="paper",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+        )
+        return fig
+
+    # Create pivot table
+    pivot_df = create_workspace_usage_pivot(usage_df, exclude_storage=True)
+    
+    if pivot_df.empty:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No compute usage data available",
+            xref="paper",
+            yref="paper",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+        )
+        return fig
+
+    # Get top workspaces and instances
+    top_ws = pivot_df.head(top_workspaces).index.tolist()
+    top_inst = pivot_df.sum().nlargest(top_instances).index.tolist()
+    
+    # Filter pivot table
+    filtered_pivot = pivot_df.loc[
+        pivot_df.index.isin(top_ws),
+        pivot_df.columns.isin(top_inst)
+    ]
+
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Heatmap(
+            z=filtered_pivot.values,
+            x=filtered_pivot.columns.tolist(),
+            y=filtered_pivot.index.tolist(),
+            colorscale="Greens",
+            hovertemplate="<b>%{y}</b><br>Instance: %{x}<br>Hours: %{z:,.1f}<extra></extra>",
+            colorbar=dict(
+                title=dict(text="Hours", side="right"),
+            ),
+        )
+    )
+
+    fig.update_layout(
+        title=dict(
+            text=title,
+            font=dict(size=16, family="Space Grotesk, sans-serif"),
+        ),
+        xaxis_title="Instance Type",
+        yaxis_title="Workspace",
+        xaxis=dict(
+            tickangle=-45,
+        ),
+        plot_bgcolor="rgba(0, 0, 0, 0)",
+        paper_bgcolor="rgba(0, 0, 0, 0)",
+        margin=dict(l=200, r=30, t=60, b=100),
+        height=500,
+    )
+
+    return fig
+
+
+def create_usage_trend_chart(
+    usage_df: pd.DataFrame,
+    group_col: str = "workspace",
+    title: str = "Usage Hours Trend",
+    top_n: int = 5,
+) -> go.Figure:
+    """
+    Create a line chart showing usage hours trends over time.
+    
+    Parameters
+    ----------
+    usage_df : pd.DataFrame
+        DataFrame with usage data.
+    group_col : str, optional
+        Column to group by for multiple lines.
+    title : str, optional
+        Chart title.
+    top_n : int, optional
+        Number of top groups to show.
+    
+    Returns
+    -------
+    go.Figure
+        Plotly figure object.
+    """
+    if usage_df.empty or "usage_hours" not in usage_df.columns:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No usage data available",
+            xref="paper",
+            yref="paper",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+        )
+        return fig
+
+    # Filter out storage
+    compute_df = usage_df[~usage_df["usage_type"].str.contains("VolumeUsage", na=False)]
+    
+    if compute_df.empty or group_col not in compute_df.columns:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No compute usage data available",
+            xref="paper",
+            yref="paper",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+        )
+        return fig
+
+    # Get top N groups by total usage
+    top_groups = (
+        compute_df.groupby(group_col)["usage_hours"]
+        .sum()
+        .nlargest(top_n)
+        .index.tolist()
+    )
+
+    # Filter and pivot
+    filtered = compute_df[compute_df[group_col].isin(top_groups)]
+    pivoted = filtered.pivot_table(
+        index="time_period_start",
+        columns=group_col,
+        values="usage_hours",
+        aggfunc="sum",
+    ).fillna(0)
+
+    fig = go.Figure()
+
+    colors = ["#22c55e", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4", "#84cc16"]
+
+    for i, col in enumerate(pivoted.columns):
+        fig.add_trace(
+            go.Scatter(
+                x=pivoted.index,
+                y=pivoted[col],
+                name=col,
+                mode="lines+markers",
+                line=dict(color=colors[i % len(colors)], width=2),
+                marker=dict(size=6),
+                hovertemplate=f"<b>{col}</b><br>%{{x|%b %Y}}<br>Hours: %{{y:,.1f}}<extra></extra>",
+            )
+        )
+
+    fig.update_layout(
+        title=dict(
+            text=title,
+            font=dict(size=16, family="Space Grotesk, sans-serif"),
+        ),
+        xaxis_title="",
+        yaxis_title="Hours",
+        xaxis=dict(
+            gridcolor="rgba(148, 163, 184, 0.1)",
+            tickformat="%b %Y",
+        ),
+        yaxis=dict(
+            tickformat=",.0f",
             gridcolor="rgba(148, 163, 184, 0.1)",
         ),
         plot_bgcolor="rgba(0, 0, 0, 0)",
@@ -1354,6 +1965,188 @@ def main():
             st.plotly_chart(tag_trend, use_container_width=True)
         else:
             st.info("No trend data available.")
+
+    st.markdown("---")
+
+    # ==========================================================================
+    # Usage Hours Analysis Section
+    # ==========================================================================
+    
+    st.markdown("## ⏱️ Usage Hours Analysis")
+    
+    st.markdown(
+        """
+        <div style="color: #94a3b8; margin-bottom: 1rem;">
+        Track compute hours usage per workspace and instance type. Storage usage is excluded from hour calculations.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    
+    # Fetch usage data with workspace and instance grouping
+    with st.spinner("Fetching usage hours data..."):
+        try:
+            usage_df = fetch_usage_by_workspace_cached(
+                start_date_str, end_date_str, tag_key, region_name
+            )
+            usage_data_loaded = True
+        except Exception as e:
+            st.error(f"Error fetching usage data: {e}")
+            logger.error(f"Error fetching usage data: {e}")
+            usage_df = pd.DataFrame()
+            usage_data_loaded = False
+    
+    if usage_data_loaded and not usage_df.empty:
+        # Usage summary metrics
+        usage_metrics = get_usage_summary_metrics(usage_df)
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric(
+                label="Total Compute Hours",
+                value=f"{usage_metrics['total_hours']:,.0f}",
+                help="Total compute hours (excluding storage)",
+            )
+        
+        with col2:
+            st.metric(
+                label="Avg Monthly Hours",
+                value=f"{usage_metrics['avg_monthly_hours']:,.0f}",
+                help="Average monthly compute hours",
+            )
+        
+        with col3:
+            st.metric(
+                label="Active Workspaces",
+                value=f"{usage_metrics['total_workspaces']}",
+                help="Number of unique workspaces with usage",
+            )
+        
+        with col4:
+            st.metric(
+                label="Instance Types Used",
+                value=f"{usage_metrics['total_instance_types']}",
+                help="Number of different instance types used",
+            )
+        
+        st.markdown("---")
+        
+        # Monthly usage hours chart
+        usage_hours_chart = create_usage_hours_chart(
+            usage_df,
+            title="Monthly Compute Hours",
+        )
+        st.plotly_chart(usage_hours_chart, use_container_width=True)
+        
+        st.markdown("---")
+        
+        # Usage breakdown - two columns
+        col_left, col_right = st.columns(2)
+        
+        with col_left:
+            st.markdown("### Hours by Workspace")
+            workspace_chart = create_usage_by_workspace_chart(
+                usage_df,
+                title=f"Top 10 Workspaces by Hours",
+                top_n=10,
+            )
+            st.plotly_chart(workspace_chart, use_container_width=True)
+        
+        with col_right:
+            st.markdown("### Hours by App Type")
+            app_type_chart = create_usage_by_app_type_chart(
+                usage_df,
+                title="Usage Distribution by App Type",
+            )
+            st.plotly_chart(app_type_chart, use_container_width=True)
+        
+        st.markdown("---")
+        
+        # Instance type breakdown and heatmap
+        col_left2, col_right2 = st.columns(2)
+        
+        with col_left2:
+            st.markdown("### Hours by Instance Type")
+            instance_chart = create_usage_by_instance_chart(
+                usage_df,
+                title="Top 10 Instance Types by Hours",
+                top_n=10,
+            )
+            st.plotly_chart(instance_chart, use_container_width=True)
+        
+        with col_right2:
+            st.markdown("### Workspace vs Instance Heatmap")
+            heatmap_chart = create_workspace_instance_heatmap(
+                usage_df,
+                title="Usage Hours Matrix",
+                top_workspaces=8,
+                top_instances=6,
+            )
+            st.plotly_chart(heatmap_chart, use_container_width=True)
+        
+        st.markdown("---")
+        
+        # Usage trends
+        st.markdown("### Usage Trends Over Time")
+        
+        usage_tab1, usage_tab2, usage_tab3 = st.tabs(["By Workspace", "By Instance Type", "By App Type"])
+        
+        with usage_tab1:
+            workspace_trend = create_usage_trend_chart(
+                usage_df,
+                group_col="workspace",
+                title="Monthly Usage Trend by Workspace",
+                top_n=5,
+            )
+            st.plotly_chart(workspace_trend, use_container_width=True)
+        
+        with usage_tab2:
+            instance_trend = create_usage_trend_chart(
+                usage_df,
+                group_col="instance_type",
+                title="Monthly Usage Trend by Instance Type",
+                top_n=5,
+            )
+            st.plotly_chart(instance_trend, use_container_width=True)
+        
+        with usage_tab3:
+            app_trend = create_usage_trend_chart(
+                usage_df,
+                group_col="app_type",
+                title="Monthly Usage Trend by App Type",
+                top_n=5,
+            )
+            st.plotly_chart(app_trend, use_container_width=True)
+        
+        # Detailed usage table
+        with st.expander("📋 View Detailed Usage Data"):
+            # Create summary table by workspace and instance type
+            summary_table = (
+                usage_df[~usage_df["usage_type"].str.contains("VolumeUsage", na=False)]
+                .groupby(["workspace", "instance_type", "app_type"])
+                .agg({
+                    "usage_hours": "sum",
+                    "blended_cost": "sum",
+                })
+                .reset_index()
+                .sort_values("usage_hours", ascending=False)
+            )
+            
+            summary_table["usage_hours"] = summary_table["usage_hours"].apply(lambda x: f"{x:,.1f}")
+            summary_table["blended_cost"] = summary_table["blended_cost"].apply(lambda x: f"${x:,.2f}")
+            
+            summary_table = summary_table.rename(columns={
+                "workspace": "Workspace",
+                "instance_type": "Instance Type",
+                "app_type": "App Type",
+                "usage_hours": "Hours",
+                "blended_cost": "Cost",
+            })
+            
+            st.dataframe(summary_table, use_container_width=True, hide_index=True)
+    else:
+        st.info("No usage data available for the selected period.")
 
     st.markdown("---")
 

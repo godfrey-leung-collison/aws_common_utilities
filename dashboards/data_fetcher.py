@@ -336,6 +336,142 @@ class CostDataFetcher:
         
         return usage_type
 
+    def _extract_app_type(self, usage_type: str) -> str:
+        """
+        Extract the app type from a usage type string.
+        
+        Examples:
+        - "EU-Studio:JupyterLab-ml.t3.medium" -> "JupyterLab"
+        - "EU-Studio:CodeEditor-ml.m5.large" -> "CodeEditor"
+        - "EU-Studio:KernelGateway-ml.t3.medium" -> "KernelGateway"
+        """
+        if "JupyterLab" in usage_type:
+            return "JupyterLab"
+        elif "CodeEditor" in usage_type:
+            return "CodeEditor"
+        elif "KernelGateway" in usage_type:
+            return "KernelGateway"
+        elif "JupyterServer" in usage_type:
+            return "JupyterServer"
+        elif "TensorBoard" in usage_type:
+            return "TensorBoard"
+        elif "VolumeUsage" in usage_type:
+            return "Storage"
+        else:
+            return "Other"
+
+    def _extract_region_prefix(self, usage_type: str) -> str:
+        """
+        Extract the region prefix from a usage type string.
+        
+        Examples:
+        - "EU-Studio:JupyterLab-ml.t3.medium" -> "EU"
+        - "EUC1-Studio:CodeEditor-ml.m5.large" -> "EUC1"
+        """
+        if "-" in usage_type:
+            return usage_type.split("-")[0]
+        return "Unknown"
+
+    def fetch_usage_by_workspace_and_instance(
+        self,
+        start_date: str,
+        end_date: str,
+        tag_key: str = "Name",
+        service_filter: str = "Amazon SageMaker",
+        granularity: str = "MONTHLY",
+    ) -> pd.DataFrame:
+        """
+        Fetch usage hours grouped by workspace (tag) and usage type.
+        
+        This provides detailed breakdown of hours used per workspace per instance type.
+
+        Parameters
+        ----------
+        start_date : str
+            Start date in YYYY-MM-DD format (inclusive).
+        end_date : str
+            End date in YYYY-MM-DD format (exclusive).
+        tag_key : str, optional
+            Tag key to identify workspaces. Default is "Name".
+        service_filter : str, optional
+            AWS service to filter by. Default is "Amazon SageMaker".
+        granularity : str, optional
+            Time granularity: "DAILY", "MONTHLY". Default is "MONTHLY".
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with usage data grouped by workspace and instance type.
+        """
+        logger.info(f"Fetching usage by workspace and instance from {start_date} to {end_date}")
+
+        try:
+            # Fetch data grouped by tag (workspace)
+            tag_response = self.cost_client.get_cost_and_usage(
+                TimePeriod={"Start": start_date, "End": end_date},
+                Granularity=granularity,
+                Filter={
+                    "Dimensions": {
+                        "Key": "SERVICE",
+                        "Values": [service_filter],
+                        "MatchOptions": ["EQUALS"],
+                    }
+                },
+                GroupBy=[
+                    {"Type": "TAG", "Key": tag_key},
+                    {"Type": "DIMENSION", "Key": "USAGE_TYPE"},
+                ],
+                Metrics=["BlendedCost", "UnblendedCost", "UsageQuantity"],
+            )
+
+            rows = []
+            for result in tag_response.get("ResultsByTime", []):
+                time_period_start = result["TimePeriod"]["Start"]
+                time_period_end = result["TimePeriod"]["End"]
+
+                for group in result.get("Groups", []):
+                    keys = group.get("Keys", [])
+                    if len(keys) >= 2:
+                        tag_value = keys[0]
+                        usage_type = keys[1]
+                    else:
+                        continue
+
+                    metrics = group.get("Metrics", {})
+                    blended_cost = float(metrics.get("BlendedCost", {}).get("Amount", 0))
+                    unblended_cost = float(metrics.get("UnblendedCost", {}).get("Amount", 0))
+                    usage_quantity = float(metrics.get("UsageQuantity", {}).get("Amount", 0))
+
+                    rows.append({
+                        "time_period_start": time_period_start,
+                        "time_period_end": time_period_end,
+                        "workspace": tag_value.replace(f"{tag_key}$", "") if f"{tag_key}$" in tag_value else tag_value,
+                        "usage_type": usage_type,
+                        "blended_cost": blended_cost,
+                        "unblended_cost": unblended_cost,
+                        "usage_hours": usage_quantity,
+                    })
+
+            df = pd.DataFrame(rows)
+
+            if not df.empty:
+                df["time_period_start"] = pd.to_datetime(df["time_period_start"])
+                df["month"] = df["time_period_start"].dt.strftime("%b %Y")
+                df["workspace"] = df["workspace"].replace("", "Untagged")
+                
+                # Extract additional fields
+                df["category"] = df["usage_type"].apply(self._extract_category)
+                df["instance_type"] = df["usage_type"].apply(self._extract_instance_type)
+                df["app_type"] = df["usage_type"].apply(self._extract_app_type)
+                df["region"] = df["usage_type"].apply(self._extract_region_prefix)
+
+            logger.info(f"Retrieved {len(df)} usage records by workspace and instance")
+            return df
+
+        except ClientError as e:
+            logger.error(f"Error fetching usage by workspace and instance: {e}")
+            raise
+
     def fetch_cost_forecast(
         self,
         start_date: str,
@@ -501,4 +637,133 @@ def get_summary_metrics(cost_df: pd.DataFrame) -> dict:
         "min_monthly_cost": monthly_totals.min(),
         "total_months": len(monthly_totals),
     }
+
+
+def get_usage_summary_metrics(usage_df: pd.DataFrame) -> dict:
+    """
+    Calculate summary metrics from usage data.
+
+    Parameters
+    ----------
+    usage_df : pd.DataFrame
+        DataFrame with usage data containing 'usage_hours' column.
+
+    Returns
+    -------
+    dict
+        Dictionary with usage summary metrics.
+    """
+    if usage_df.empty or "usage_hours" not in usage_df.columns:
+        return {
+            "total_hours": 0,
+            "avg_monthly_hours": 0,
+            "total_workspaces": 0,
+            "total_instance_types": 0,
+            "total_months": 0,
+        }
+
+    # Filter out storage (VolumeUsage) for compute hours
+    compute_df = usage_df[~usage_df["usage_type"].str.contains("VolumeUsage", na=False)]
+    
+    monthly_totals = compute_df.groupby("month")["usage_hours"].sum()
+
+    return {
+        "total_hours": compute_df["usage_hours"].sum(),
+        "avg_monthly_hours": monthly_totals.mean() if not monthly_totals.empty else 0,
+        "total_workspaces": usage_df["workspace"].nunique() if "workspace" in usage_df.columns else 0,
+        "total_instance_types": usage_df["instance_type"].nunique() if "instance_type" in usage_df.columns else 0,
+        "total_months": len(monthly_totals),
+    }
+
+
+def create_workspace_usage_pivot(
+    usage_df: pd.DataFrame,
+    value_col: str = "usage_hours",
+    exclude_storage: bool = True,
+) -> pd.DataFrame:
+    """
+    Create a pivot table of usage by workspace and instance type.
+
+    Parameters
+    ----------
+    usage_df : pd.DataFrame
+        DataFrame with usage data.
+    value_col : str, optional
+        Column to aggregate. Default is "usage_hours".
+    exclude_storage : bool, optional
+        Whether to exclude storage (VolumeUsage) from the pivot. Default is True.
+
+    Returns
+    -------
+    pd.DataFrame
+        Pivot table with workspaces as rows and instance types as columns.
+    """
+    if usage_df.empty:
+        return pd.DataFrame()
+
+    df = usage_df.copy()
+    
+    if exclude_storage:
+        df = df[~df["usage_type"].str.contains("VolumeUsage", na=False)]
+    
+    if df.empty:
+        return pd.DataFrame()
+
+    pivot = df.pivot_table(
+        index="workspace",
+        columns="instance_type",
+        values=value_col,
+        aggfunc="sum",
+        fill_value=0,
+    )
+
+    # Sort by total usage
+    pivot["_total"] = pivot.sum(axis=1)
+    pivot = pivot.sort_values("_total", ascending=False)
+    pivot = pivot.drop("_total", axis=1)
+
+    return pivot
+
+
+def create_monthly_usage_by_workspace(
+    usage_df: pd.DataFrame,
+    exclude_storage: bool = True,
+) -> pd.DataFrame:
+    """
+    Create monthly usage summary by workspace.
+
+    Parameters
+    ----------
+    usage_df : pd.DataFrame
+        DataFrame with usage data.
+    exclude_storage : bool, optional
+        Whether to exclude storage from the calculation. Default is True.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with monthly usage by workspace.
+    """
+    if usage_df.empty:
+        return pd.DataFrame()
+
+    df = usage_df.copy()
+    
+    if exclude_storage:
+        df = df[~df["usage_type"].str.contains("VolumeUsage", na=False)]
+    
+    if df.empty:
+        return pd.DataFrame()
+
+    # Group by month and workspace
+    monthly_usage = (
+        df.groupby(["time_period_start", "month", "workspace"])
+        .agg({
+            "usage_hours": "sum",
+            "blended_cost": "sum",
+        })
+        .reset_index()
+    )
+
+    return monthly_usage.sort_values(["time_period_start", "usage_hours"], ascending=[True, False])
 
